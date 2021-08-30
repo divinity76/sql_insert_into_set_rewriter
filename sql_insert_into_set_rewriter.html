@@ -1,0 +1,149 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <title>sql INSERT INTO SET rewrite</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+</head>
+
+<body>
+    WARNING: this conver has *not* been written to be malicious-input-proof, nor binary-safe
+    (don't use it on binary data, and don't use it on potentially malicious queries)
+    <br />
+    <textarea id="sql_in" style="width:100%;height:max-content;"></textarea>
+    <br />
+    <pre id="result"></pre>
+</body>
+<script>
+    {
+        // hack to remember last input on page refresh
+        let sql_in_element = document.querySelector("#sql_in");
+        let rememberHack = function () {
+            localStorage.setItem("sql_in_remember_hack", sql_in_element.value);
+        };
+        sql_in_element.addEventListener("input", rememberHack);
+        sql_in_element.addEventListener("change", rememberHack);
+        sql_in_element.value = localStorage.getItem("sql_in_remember_hack");
+    }
+
+    $("#sql_in").on("input change", function () {
+        const auto_resize = true;
+        if (auto_resize) {
+            let sql_in_ele = $("#sql_in")[0];
+            sql_in_ele.style.height = "1px";
+            sql_in_ele.style.height = (25 + sql_in_ele.scrollHeight) + "px";
+        }
+        const quoteIdentifier = function (identifier) {
+            // identifiers have different escaping rules than other strings
+            // https://www.codetinkerer.com/2015/07/08/escaping-column-and-table-names-in-mysql-part2.html
+            return '`' + identifier.replace(/\`/g, '``') + '`';
+        };
+
+        let input = $("#sql_in").val().trim();
+        let toParse = input;
+        let result = "";
+        let outEle = $("#result");
+        let rex = null;
+        let verifyAndRemove = function (needle, haystack) {
+            let rexResult = haystack.match(needle);
+            if (!rexResult) {
+                result += "ERROR: missing needle: " + needle.toString();
+                return;
+            }
+            let start = haystack.slice(0, rexResult.index);
+            let end = haystack.slice(rexResult.index + rexResult[0].length);
+            const ret = start + end;
+            // console.log("ret: "+ret);
+            return ret;
+        };
+        rex = /^INSERT\s+INTO\s+/i;
+        toParse = verifyAndRemove(rex, toParse);
+        rex = /^\S+/;
+        const table = toParse.match(rex)[0];
+        rex = /^\S+\s+/;
+        toParse = verifyAndRemove(rex, toParse);
+        rex = /\(([\s\S]+?)\)/;
+        let columns = toParse.match(rex)[1].split(',').map(
+            function (str) { return str.trim(); }).filter(
+                function (str) { return str.length; });
+        let valueObject = [];
+        columns.forEach(function (val, index) {
+            let o = {};
+            o[val] = undefined;
+            valueObject[index] = o;
+        });
+        // console.log(valueObject);
+        toParse = verifyAndRemove(rex, toParse);
+        // console.log(columns);
+        toParse = verifyAndRemove(/^\s*VALUES\s*\(\s*/i, toParse);
+        toParse = verifyAndRemove(/\s*\)\;?\s*$/i, toParse);
+        let insertIntoValueObject = function (index, value) {
+            let key = Object.getOwnPropertyNames(valueObject[index])[0];
+            valueObject[index][key] = value;
+        };
+        let attempts = 0;
+        let columnIndex = 0;
+        for (; ;) {
+            ++attempts;
+            if (attempts > 9999) {
+                result += "ERROR attempts too high: " + attempts + "\n";
+                break;
+            }
+            toParse = verifyAndRemove(/^\s*/, toParse);
+            if (toParse.length < 1) {
+                // we're done!
+                break;
+            }
+            if (toParse[0].match(/^\s+|\,/)) {
+                // separator
+                toParse = verifyAndRemove(/^\s*\,?\s*/, toParse);
+                continue;
+            }
+            if (toParse[0] === '\'') {
+                // string..
+                //toParse = verifyAndRemove(/^\'/, toParse);
+                let rex = /^\'[\s\S]*?(?!\\)\'/;
+                let endPos = toParse.match(rex);
+                let str = toParse.slice(0, endPos.index+endPos[0].length);
+                console.log({str:str,endPos:endPos});
+                toParse = verifyAndRemove(rex, toParse);
+                insertIntoValueObject(columnIndex, str);
+                ++columnIndex;
+                continue;
+            }
+            if (toParse.match(/^\+?\-?[0-9]/)) {
+                // number
+                let rex = /^\+?\-?\d+(?:\.\d+)?/;
+                let num = toParse.match(rex);
+                // console.log(num);
+                toParse = verifyAndRemove(rex, toParse);
+                insertIntoValueObject(columnIndex, num);
+                ++columnIndex;
+                continue;
+            } else {
+                // console.log("NOT A NUMBER: "+toParse[0]);
+            }
+        }
+        /// DONE:
+        result += toParse;
+        if (result.length > 0) {
+            result += "\n\n";
+        }
+        result += "INSERT INTO " + table + " SET\n";
+        console.log(valueObject);
+        const glue = ",\n";
+        valueObject.forEach(function (val, index) {
+            let identifier = Object.getOwnPropertyNames(val)[0];
+            result += quoteIdentifier(identifier) + ' = ' + val[identifier] + glue;
+            // console.log(val);
+        });
+        if (result.endsWith(glue)) {
+            result = result.slice(0, result.length - glue.length);
+        }
+        result += ";";
+        outEle.text(result);
+    });
+    $("#sql_in").change(); // fixes some refresh bugs
+</script>
+
+</html>
